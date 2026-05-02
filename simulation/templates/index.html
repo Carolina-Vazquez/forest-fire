@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulación de Incendios Forestales</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #1a1a2e; color: #eee; font-family: Arial, sans-serif; padding: 20px; }
+        h1 { text-align: center; color: #e94560; margin-bottom: 20px; }
+        .container { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+        .panel { background: #16213e; padding: 20px; border-radius: 10px; min-width: 250px; }
+        .panel h2 { color: #0f3460; background: #e94560; padding: 8px; border-radius: 5px; margin-bottom: 15px; font-size: 14px; }
+        label { display: block; margin-bottom: 5px; font-size: 13px; color: #aaa; }
+        input { width: 100%; padding: 8px; margin-bottom: 10px; background: #0f3460; border: 1px solid #e94560; border-radius: 5px; color: #eee; }
+        button { width: 100%; padding: 10px; margin-bottom: 8px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 13px; }
+        .btn-primary { background: #e94560; color: white; }
+        .btn-secondary { background: #0f3460; color: white; }
+        .btn-success { background: #2ecc71; color: white; }
+        .btn-danger { background: #e74c3c; color: white; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        canvas { border: 2px solid #e94560; border-radius: 5px; display: block; }
+        .stat { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }
+        .stat span:last-child { color: #e94560; font-weight: bold; }
+        .weather-result { background: #0f3460; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 12px; }
+        #status { text-align: center; color: #2ecc71; margin: 10px 0; font-size: 13px; min-height: 20px; }
+    </style>
+</head>
+<body>
+    <h1>🔥 Simulación de Incendios Forestales — Drossel-Schwabl</h1>
+    <div id="status"></div>
+    <div class="container">
+
+        <!-- Panel de control -->
+        <div class="panel">
+            <h2>⚙️ NUEVA SIMULACIÓN</h2>
+            <label>Tamaño (20-200)</label>
+            <input type="number" id="size" value="100" min="20" max="200">
+            <label>p (prob. árbol)</label>
+            <input type="number" id="p" value="0.05" step="0.001" min="0" max="1">
+            <label>f (prob. rayo)</label>
+            <input type="number" id="f" value="0.001" step="0.0001" min="0" max="1">
+            <button class="btn-primary" onclick="createSimulation()">Crear Simulación</button>
+
+            <h2 style="margin-top:15px;">🌤️ PARÁMETROS POR CIUDAD</h2>
+            <label>Ciudad</label>
+            <input type="text" id="city" placeholder="ej: Madrid">
+            <button class="btn-secondary" onclick="getWeather()">Obtener p y f del tiempo</button>
+            <div id="weather-result"></div>
+
+            <h2 style="margin-top:15px;">▶️ CONTROL</h2>
+            <button class="btn-success" id="btn-step" onclick="stepSimulation(1)" disabled>Paso a paso</button>
+            <button class="btn-success" id="btn-auto" onclick="toggleAuto()" disabled>▶ Automático</button>
+            <button class="btn-danger" id="btn-delete" onclick="deleteSimulation()" disabled>Eliminar simulación</button>
+        </div>
+
+        <!-- Canvas -->
+        <div class="panel">
+            <h2>🗺️ CUADRÍCULA</h2>
+            <canvas id="canvas" width="500" height="500"></canvas>
+        </div>
+
+        <!-- Estadísticas -->
+        <div class="panel">
+            <h2>📊 ESTADÍSTICAS</h2>
+            <div class="stat"><span>Pasos ejecutados</span><span id="stat-steps">—</span></div>
+            <div class="stat"><span>Densidad árboles</span><span id="stat-density">—</span></div>
+            <div class="stat"><span>Árboles</span><span id="stat-trees">—</span></div>
+            <div class="stat"><span>En llamas</span><span id="stat-fire">—</span></div>
+            <div class="stat"><span>Vacías</span><span id="stat-empty">—</span></div>
+            <div class="stat"><span>p actual</span><span id="stat-p">—</span></div>
+            <div class="stat"><span>f actual</span><span id="stat-f">—</span></div>
+
+            <h2 style="margin-top:15px;">🔥 HISTOGRAMA DE INCENDIOS</h2>
+            <canvas id="histogram" width="250" height="200"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let simId = null;
+        let autoInterval = null;
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const histCanvas = document.getElementById('histogram');
+        const histCtx = histCanvas.getContext('2d');
+
+        function setStatus(msg, color='#2ecc71') {
+            const el = document.getElementById('status');
+            el.style.color = color;
+            el.textContent = msg;
+        }
+
+        async function createSimulation() {
+            const size = parseInt(document.getElementById('size').value);
+            const p = parseFloat(document.getElementById('p').value);
+            const f = parseFloat(document.getElementById('f').value);
+
+            const res = await fetch('/api/simulations/', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({size, p, f})
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                setStatus('Error: ' + JSON.stringify(err), '#e74c3c');
+                return;
+            }
+
+            const data = await res.json();
+            simId = data.id;
+            setStatus('Simulación creada: ' + simId);
+            document.getElementById('btn-step').disabled = false;
+            document.getElementById('btn-auto').disabled = false;
+            document.getElementById('btn-delete').disabled = false;
+            renderState(data);
+        }
+
+        async function stepSimulation(n=1) {
+            if (!simId) return;
+            const res = await fetch(`/api/simulations/${simId}/step/`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({steps: n})
+            });
+            const data = await res.json();
+            renderState(data);
+        }
+
+        function toggleAuto() {
+            const btn = document.getElementById('btn-auto');
+            if (autoInterval) {
+                clearInterval(autoInterval);
+                autoInterval = null;
+                btn.textContent = '▶ Automático';
+                btn.style.background = '#2ecc71';
+            } else {
+                autoInterval = setInterval(() => stepSimulation(1), 100);
+                btn.textContent = '⏸ Pausar';
+                btn.style.background = '#e67e22';
+            }
+        }
+
+        async function deleteSimulation() {
+            if (!simId) return;
+            if (autoInterval) toggleAuto();
+            await fetch(`/api/simulations/${simId}/`, {method: 'DELETE'});
+            simId = null;
+            setStatus('Simulación eliminada', '#e74c3c');
+            document.getElementById('btn-step').disabled = true;
+            document.getElementById('btn-auto').disabled = true;
+            document.getElementById('btn-delete').disabled = true;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            histCtx.clearRect(0, 0, histCanvas.width, histCanvas.height);
+        }
+
+        async function getWeather() {
+            const city = document.getElementById('city').value.trim();
+            if (!city) return;
+            setStatus('Consultando tiempo en ' + city + '...');
+            const res = await fetch(`/api/weather/?city=${encodeURIComponent(city)}`);
+            const data = await res.json();
+            if (data.error) {
+                setStatus('Error: ' + data.error, '#e74c3c');
+                return;
+            }
+            document.getElementById('p').value = data.p;
+            document.getElementById('f').value = data.f;
+            document.getElementById('weather-result').innerHTML = `
+                <div class="weather-result">
+                    🌡️ Temp: ${data.weather.temperature}°C<br>
+                    💧 Humedad: ${data.weather.humidity}%<br>
+                    💨 Viento: ${data.weather.wind_speed} km/h<br>
+                    <strong>p sugerida: ${data.p} | f sugerida: ${data.f}</strong>
+                </div>`;
+            setStatus('Parámetros actualizados para ' + city);
+        }
+
+        function renderState(data) {
+            // Estadísticas
+            document.getElementById('stat-steps').textContent = data.steps_executed;
+            document.getElementById('stat-density').textContent = (data.stats.tree_density * 100).toFixed(1) + '%';
+            document.getElementById('stat-trees').textContent = data.stats.tree_count;
+            document.getElementById('stat-fire').textContent = data.stats.fire_count;
+            document.getElementById('stat-empty').textContent = data.stats.empty_count;
+            document.getElementById('stat-p').textContent = data.p;
+            document.getElementById('stat-f').textContent = data.f;
+
+            // Cuadrícula en canvas
+            const grid = data.grid;
+            const size = grid.length;
+            const cellSize = canvas.width / size;
+            for (let r = 0; r < size; r++) {
+                for (let c = 0; c < size; c++) {
+                    const val = grid[r][c];
+                    ctx.fillStyle = val === 1 ? '#2ecc71' : val === 2 ? '#e67e22' : '#111';
+                    ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+                }
+            }
+
+            // Histograma
+            drawHistogram(data.fire_histogram);
+        }
+
+        function drawHistogram(histogram) {
+            histCtx.clearRect(0, 0, histCanvas.width, histCanvas.height);
+            const entries = Object.entries(histogram).map(([k, v]) => [parseInt(k), v]);
+            if (entries.length === 0) return;
+            entries.sort((a, b) => a[0] - b[0]);
+            const maxVal = Math.max(...entries.map(e => e[1]));
+            const barWidth = histCanvas.width / entries.length;
+            entries.forEach(([size, count], i) => {
+                const h = (count / maxVal) * (histCanvas.height - 20);
+                histCtx.fillStyle = '#e94560';
+                histCtx.fillRect(i * barWidth, histCanvas.height - h - 20, barWidth - 1, h);
+            });
+            histCtx.fillStyle = '#aaa';
+            histCtx.font = '10px Arial';
+            histCtx.fillText('Tamaño de incendio →', 5, histCanvas.height - 5);
+        }
+    </script>
+</body>
+</html>
